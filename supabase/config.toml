@@ -1,0 +1,4 @@
+project_id = "izkdrxgrirtybbjzomrt"
+
+[functions.send-otp]
+verify_jwt = false
