@@ -37,7 +37,7 @@ export function SiteFooter() {
       <div className="mx-auto max-w-6xl px-4">
         <div className="font-semibold">{ACADEMY_NAME} · {CENTER_NAME}</div>
         <div className="opacity-80">
-          {CENTER_LOCATION} · Contact: {CONTACT_PHONE} · {WEBSITE_URL}
+          {CENTER_LOCATION} · Contact: {CONTACT_PHONE} · <a href={WEBSITE_URL} target="_blank" rel="noopener noreferrer" className="hover:underline">{WEBSITE_URL}</a>
         </div>
         <div className="mt-2 opacity-60">
           © {new Date().getFullYear()} {ACADEMY_NAME}. All rights reserved.

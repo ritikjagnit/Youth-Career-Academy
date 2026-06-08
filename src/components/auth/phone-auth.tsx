@@ -1,11 +1,5 @@
 import React, { useState, useEffect } from "react";
-import type { ConfirmationResult } from "firebase/auth";
-import { auth } from "@/lib/firebase";
-import {
-  clearPhoneRecaptcha,
-  firebasePhoneErrorMessage,
-  sendPhoneOtp,
-} from "@/lib/phone-otp";
+import { sendWhatsAppOtp, verifyWhatsAppOtp } from "@/lib/otp.functions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,7 +8,6 @@ import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp
 import { Loader2, Phone, ShieldCheck, ArrowRight, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 
-const RECAPTCHA_CONTAINER = "phone-login-recaptcha";
 
 interface PhoneAuthProps {
   onSuccess: (user: any) => void;
@@ -26,11 +19,7 @@ export function PhoneAuth({ onSuccess }: PhoneAuthProps) {
   const [otp, setOtp] = useState("");
   const [step, setStep] = useState<"PHONE" | "OTP">("PHONE");
   const [loading, setLoading] = useState(false);
-  const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
-
-  useEffect(() => {
-    return () => clearPhoneRecaptcha();
-  }, []);
+  const [sessionActive, setSessionActive] = useState(false);
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,13 +31,15 @@ export function PhoneAuth({ onSuccess }: PhoneAuthProps) {
 
     setLoading(true);
     try {
-      const confirmation = await sendPhoneOtp(auth, digits, RECAPTCHA_CONTAINER);
-      setConfirmationResult(confirmation);
+      const response = await sendWhatsAppOtp({ data: { phone: countryCode + digits } });
+      if (!response.ok) throw new Error(response.message || "Failed to send WhatsApp OTP");
+      
+      setSessionActive(true);
       setStep("OTP");
-      toast.success("OTP sent to your mobile via SMS");
-    } catch (error: unknown) {
+      toast.success("OTP sent to your mobile via WhatsApp");
+    } catch (error: any) {
       console.error(error);
-      toast.error(firebasePhoneErrorMessage(error));
+      toast.error(error.message);
     } finally {
       setLoading(false);
     }
@@ -61,7 +52,7 @@ export function PhoneAuth({ onSuccess }: PhoneAuthProps) {
       return;
     }
 
-    if (!confirmationResult) {
+    if (!sessionActive) {
       toast.error("Session expired. Please request a new OTP.");
       setStep("PHONE");
       return;
@@ -69,20 +60,24 @@ export function PhoneAuth({ onSuccess }: PhoneAuthProps) {
 
     setLoading(true);
     try {
-      const result = await confirmationResult.confirm(otp);
-      const user = result.user;
+      const digits = phoneNumber.replace(/\D/g, "");
+      const response = await verifyWhatsAppOtp({ data: { phone: countryCode + digits, otp } });
+      if (!response.ok) throw new Error(response.message || "Invalid or expired OTP");
+
+      // For phone-auth standalone, we just return the phone details since we don't have Firebase user anymore
+      const user = { phoneNumber: countryCode + digits, uid: response.phone || countryCode + digits };
 
       localStorage.setItem("userAuth", JSON.stringify({
         uid: user.uid,
         phoneNumber: user.phoneNumber,
-        token: await user.getIdToken()
+        token: "whatsapp-auth-token"
       }));
 
       toast.success("Successfully authenticated!");
       onSuccess(user);
-    } catch (error: unknown) {
+    } catch (error: any) {
       console.error(error);
-      toast.error(firebasePhoneErrorMessage(error));
+      toast.error(error.message);
     } finally {
       setLoading(false);
     }
@@ -90,8 +85,7 @@ export function PhoneAuth({ onSuccess }: PhoneAuthProps) {
 
   const handleBack = () => {
     setStep("PHONE");
-    setConfirmationResult(null);
-    clearPhoneRecaptcha();
+    setSessionActive(false);
   };
 
   return (
@@ -106,7 +100,7 @@ export function PhoneAuth({ onSuccess }: PhoneAuthProps) {
         <CardDescription>
           {step === "PHONE"
             ? "Enter your phone number to sign in to your account"
-            : `We sent an SMS code to ${countryCode} ${phoneNumber}`}
+            : `We sent a WhatsApp code to ${countryCode} ${phoneNumber}`}
         </CardDescription>
       </CardHeader>
 
@@ -137,7 +131,6 @@ export function PhoneAuth({ onSuccess }: PhoneAuthProps) {
               </div>
             </div>
 
-            <div id={RECAPTCHA_CONTAINER} className="sr-only" aria-hidden="true" />
 
             <Button
               type="submit"
@@ -147,7 +140,7 @@ export function PhoneAuth({ onSuccess }: PhoneAuthProps) {
               {loading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Sending SMS…
+                  Sending OTP…
                 </>
               ) : (
                 <>
@@ -160,7 +153,7 @@ export function PhoneAuth({ onSuccess }: PhoneAuthProps) {
         ) : (
           <form onSubmit={handleVerifyOtp} className="space-y-6">
             <div className="flex flex-col space-y-3 items-center">
-              <Label htmlFor="otp">Enter 6-digit code from SMS</Label>
+              <Label htmlFor="otp">Enter 6-digit code from WhatsApp</Label>
               <InputOTP
                 id="otp"
                 maxLength={6}
@@ -208,7 +201,7 @@ export function PhoneAuth({ onSuccess }: PhoneAuthProps) {
         )}
       </CardContent>
       <CardFooter className="text-center text-xs text-muted-foreground">
-        Use Chrome or Safari on a real phone. If SMS fails, check Firebase Phone + Blaze billing.
+        If you don't receive the OTP, make sure your WhatsApp number is correct.
       </CardFooter>
     </Card>
   );

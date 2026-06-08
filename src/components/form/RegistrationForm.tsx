@@ -1,14 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
-import type { ConfirmationResult } from "firebase/auth";
-import { signOut } from "firebase/auth";
 import { supabase } from "@/integrations/supabase/client";
+import { sendSmtpEmailOtp, verifyOtp as verifyEmailOtp } from "@/lib/otp.functions";
+import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
 import { auth } from "@/lib/firebase";
-import {
-  clearPhoneRecaptcha,
-  firebasePhoneErrorMessage,
-  sendPhoneOtp,
-} from "@/lib/phone-otp";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,6 +47,7 @@ import {
   ChevronRight,
   Loader2,
   Phone,
+  Mail,
   ShieldCheck,
   ArrowDown,
 } from "lucide-react";
@@ -152,7 +148,7 @@ export function RegistrationForm() {
   const [otpSent, setOtpSent] = useState(false);
   const [otp, setOtp] = useState("");
   const [otpResendIn, setOtpResendIn] = useState(0);
-  const [phoneConfirmation, setPhoneConfirmation] = useState<ConfirmationResult | null>(null);
+  const [sessionActive, setSessionActive] = useState(false);
   const [sending, setSending] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -186,8 +182,7 @@ export function RegistrationForm() {
   }, [otpResendIn]);
 
   useEffect(() => {
-    if (step !== 1) clearPhoneRecaptcha();
-    return () => clearPhoneRecaptcha();
+    // Cleanup if needed
   }, [step]);
 
   const update = <K extends keyof FormState>(k: K, v: FormState[K]) => {
@@ -276,29 +271,56 @@ export function RegistrationForm() {
   };
   const back = () => setStep((s) => Math.max(1, s - 1));
 
-  // --- Mobile OTP (Firebase SMS) ---
+  const handleGoogleLogin = async () => {
+    if (!/^\d{10}$/.test(data.mobile)) {
+      setErrors((e) => ({ ...e, mobile: "Please enter your 10-digit mobile number first" }));
+      toast.error("Please enter your mobile number before continuing with Google");
+      return;
+    }
+    try {
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+      const user = result.user;
+      
+      setData((d) => ({
+        ...d,
+        email: user.email || "",
+        full_name: user.displayName || "",
+        otpVerified: true,
+      }));
+      
+      toast.success(`Google verification successful for ${user.email}`);
+      setStep(2); // Auto-advance to step 2
+    } catch (err: any) {
+      toast.error(err.message || "Google Login failed. Try again.");
+    }
+  };
+
+  // --- Email OTP (SMTP) ---
   const sendOtp = async () => {
     if (!/^\d{10}$/.test(data.mobile)) {
-      setErrors((e) => ({ ...e, mobile: "Enter a valid 10-digit mobile number" }));
+      setErrors((e) => ({ ...e, mobile: "Please enter your 10-digit mobile number first" }));
+      toast.error("Please enter a valid 10-digit mobile number before sending OTP");
       return;
     }
     if (!z.string().email().safeParse(data.email).success) {
-      setErrors((e) => ({ ...e, email: "Enter a valid email" }));
+      setErrors((e) => ({ ...e, email: "Enter a valid email address" }));
       return;
     }
     setSending(true);
     setErrors((e) => ({ ...e, otp: "" }));
     try {
-      const confirmation = await sendPhoneOtp(auth, data.mobile, REGISTRATION_RECAPTCHA_ID);
-      setPhoneConfirmation(confirmation);
+      const response = await sendSmtpEmailOtp({ data: { email: data.email } });
+      if (!response.ok) throw new Error(response.message || "Failed to send OTP");
+      
+      setSessionActive(true);
       setOtp("");
       setOtpSent(true);
-      setOtpResendIn(30);
-      toast.success(`OTP sent via SMS to +91 ${data.mobile}`);
-    } catch (err: unknown) {
-      const message = firebasePhoneErrorMessage(err);
-      setErrors((e) => ({ ...e, otp: message }));
-      toast.error(message);
+      setOtpResendIn(60);
+      toast.success(`Email OTP sent to ${data.email}`);
+    } catch (err: any) {
+      setErrors((e) => ({ ...e, otp: err.message }));
+      toast.error(err.message);
     } finally {
       setSending(false);
     }
@@ -306,31 +328,30 @@ export function RegistrationForm() {
 
   const verifyOtp = async () => {
     if (!/^\d{6}$/.test(otp)) {
-      setErrors((e) => ({ ...e, otp: "Enter the 6-digit code from SMS" }));
+      setErrors((e) => ({ ...e, otp: "Enter the 6-digit code" }));
       return;
     }
-    if (!phoneConfirmation) {
+    if (!sessionActive) {
       setErrors((e) => ({ ...e, otp: "Session expired. Send OTP again." }));
       setOtpSent(false);
-      clearPhoneRecaptcha();
       return;
     }
     setVerifying(true);
     try {
-      await phoneConfirmation.confirm(otp);
-      await signOut(auth);
+      const response = await verifyEmailOtp({ data: { email: data.email, otp } });
+      if (!response.ok) throw new Error(response.message || "Invalid OTP");
+      
       update("otpVerified", true);
-      setPhoneConfirmation(null);
+      setSessionActive(false);
       setErrors((e) => ({ ...e, otp: "" }));
-      toast.success("Mobile number verified successfully");
-    } catch (err: unknown) {
-      const message = firebasePhoneErrorMessage(err);
-      setErrors((e) => ({ ...e, otp: message }));
-      toast.error(message);
-      if (message.includes("expired")) {
+      toast.success("Email address verified successfully");
+      setStep(2); // Auto-advance to step 2
+    } catch (err: any) {
+      setErrors((e) => ({ ...e, otp: err.message }));
+      toast.error(err.message);
+      if (err.message.includes("expired")) {
         setOtpSent(false);
-        setPhoneConfirmation(null);
-        clearPhoneRecaptcha();
+        setSessionActive(false);
       }
     } finally {
       setVerifying(false);
@@ -441,8 +462,7 @@ export function RegistrationForm() {
     setStep(1);
     setOtp("");
     setOtpSent(false);
-    setPhoneConfirmation(null);
-    clearPhoneRecaptcha();
+    setSessionActive(false);
     setTermsScrolled(false);
     localStorage.removeItem(STORAGE_KEY);
   };
@@ -451,9 +471,29 @@ export function RegistrationForm() {
     <div className="mx-auto w-full max-w-3xl rounded-2xl border border-border bg-card p-5 shadow-lg sm:p-8">
       <StepProgress current={step} />
 
-      {/* STEP 1: OTP */}
+      {/* STEP 1: OTP or Google */}
       {step === 1 && (
-        <Section title="Verify Contact" subtitle="We'll send a one-time SMS code to your mobile number (via Firebase).">
+        <Section title="Verify Contact" subtitle="Sign in with Google for instant verification, or use Email OTP.">
+          {!data.otpVerified && (
+            <div className="mb-6 space-y-4">
+              <Button 
+                type="button" 
+                variant="outline" 
+                className="w-full bg-white hover:bg-gray-50 text-gray-800 border border-gray-300 h-12 text-base shadow-sm font-semibold flex items-center justify-center gap-3"
+                onClick={handleGoogleLogin}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
+                Continue with Google
+              </Button>
+              
+            </div>
+          )}
+
           <Field label="Mobile Number" error={errors.mobile} required>
             <Input
               inputMode="numeric"
@@ -464,71 +504,75 @@ export function RegistrationForm() {
               disabled={data.otpVerified}
             />
           </Field>
+
           <Field label="Email Address" error={errors.email} required>
             <Input
               type="email"
-              placeholder="student@example.com"
+              placeholder="Enter your email address"
               value={data.email}
               onChange={(e) => update("email", e.target.value)}
-              disabled={data.otpVerified}
+              disabled={data.otpVerified || sessionActive}
             />
           </Field>
 
-          <div id={REGISTRATION_RECAPTCHA_ID} className="sr-only" aria-hidden="true" />
-
           {!data.otpVerified && (
-            <>
-              {!otpSent ? (
-                <Button
-                  type="button"
-                  onClick={sendOtp}
-                  disabled={sending}
-                  className="w-full bg-accent text-accent-foreground hover:bg-accent/90"
+            <div className="mt-4">
+              {!sessionActive ? (
+                <Button 
+                  type="button" 
+                  onClick={sendOtp} 
+                  disabled={sending || !data.email || !data.mobile}
+                  className="w-full bg-accent hover:bg-accent/90 text-white"
                 >
-                  {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Phone className="mr-2 h-4 w-4" />}
-                  {sending ? "Sending SMS…" : "Send OTP to Mobile"}
+                  {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Mail className="mr-2 h-4 w-4" />}
+                  Send Email OTP
                 </Button>
               ) : (
-                <>
-                  <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
-                    OTP sent via SMS to <b>+91 {data.mobile}</b>. Check your phone inbox.
+                <div className="space-y-3 rounded-lg border border-accent/20 bg-accent/5 p-4">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-semibold text-accent">Enter 6-digit Email OTP</Label>
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {otpResendIn > 0 ? `Resend in ${otpResendIn}s` : ""}
+                    </span>
                   </div>
-                  <Field label="Enter 6-digit OTP" error={errors.otp} required>
-                    <div className="flex justify-center py-1">
-                      <InputOTP maxLength={6} value={otp} onChange={(v) => setOtp(v.replace(/\D/g, ""))}>
-                        <InputOTPGroup>
-                          {[0, 1, 2, 3, 4, 5].map((i) => (
-                            <InputOTPSlot key={i} index={i}
-                              className="h-12 w-11 text-lg font-semibold sm:h-14 sm:w-12" />
-                          ))}
-                        </InputOTPGroup>
-                      </InputOTP>
-                    </div>
-                  </Field>
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    <Button type="button" onClick={verifyOtp} disabled={verifying || otp.length !== 6}
-                      className="flex-1 bg-success text-success-foreground hover:bg-success/90">
-                      {verifying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
-                      Verify OTP
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={otpResendIn > 0 || sending}
-                      onClick={sendOtp}
+                  <InputOTP maxLength={6} value={otp} onChange={setOtp} disabled={verifying}>
+                    <InputOTPGroup className="w-full justify-between">
+                      {[...Array(6)].map((_, i) => (
+                        <InputOTPSlot key={i} index={i} className="h-10 w-10 border-accent/30 bg-white sm:h-12 sm:w-12" />
+                      ))}
+                    </InputOTPGroup>
+                  </InputOTP>
+                  {errors.otp && <p className="text-xs text-destructive">{errors.otp}</p>}
+                  
+                  <div className="flex gap-2">
+                    <Button 
+                      type="button" 
+                      onClick={verifyOtp} 
+                      disabled={verifying || otp.length !== 6}
+                      className="flex-1 bg-success hover:bg-success/90 text-white"
                     >
-                      {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : otpResendIn > 0 ? `Resend OTP in ${otpResendIn}s` : "Resend OTP"}
+                      {verifying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+                      Verify
+                    </Button>
+                    <Button 
+                      type="button" 
+                      variant="outline" 
+                      onClick={sendOtp} 
+                      disabled={sending || otpResendIn > 0}
+                      className="w-auto border-accent/30 text-accent hover:bg-accent/10"
+                    >
+                      Resend
                     </Button>
                   </div>
-                </>
+                </div>
               )}
-            </>
+            </div>
           )}
 
           {data.otpVerified && (
             <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 p-3 text-sm text-success">
               <CheckCircle2 className="h-5 w-5" />
-              Mobile number verified successfully
+              Verified successfully! You can now proceed.
             </div>
           )}
 

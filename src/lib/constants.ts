@@ -121,8 +121,8 @@ export const ACADEMY_NAME = "Youth Career Academy";
 export const ACADEMY_TAGLINE = "Expert Coaching for JEE, NEET & MHT-CET";
 export const CENTER_NAME = "YCC Education Admission Help Center";
 export const CENTER_LOCATION = "Bhandara, Maharashtra";
-export const CONTACT_PHONE = "9876543210";
-export const WEBSITE_URL = "youthcareers.in";
+export const CONTACT_PHONE = "+91 99700 99623";
+export const WEBSITE_URL = "https://www.youthcareers.in/";
 
 // Admin credentials
 export const ADMIN_USERNAME = "yccadmin";
